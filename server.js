@@ -10,7 +10,7 @@ import paymentRoutes from './routes/paymentRoutes.js';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT;
+const PORT = process.env.PORT || 5000;
 
 // Middleware
 app.use(cors());
@@ -31,9 +31,14 @@ mongoose
 // Routes
 app.use('/api/v1/users', userRoutes);
 app.use('/api/v1/payments', paymentRoutes);
+app.use('/api/v1', (req, res) => {
+  res.status(200).json({
+    message: 'Welcome to the Blind Dating API!',
+  });
+});
 
 // Health check endpoint
-app.get('/api/health', (req, res) => {
+app.get('/api/v1/health', (req, res) => {
   res.status(200).json({
     status: 'OK',
     message: 'Blind Dating API is running',
