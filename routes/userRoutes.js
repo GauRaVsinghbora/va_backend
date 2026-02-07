@@ -1,6 +1,7 @@
 import express from 'express';
 import { body, validationResult } from 'express-validator';
 import User from '../models/User.js';
+import { sendVerificationEmail } from '../services/mailService.js';
 
 const router = express.Router();
 
@@ -23,9 +24,6 @@ const userValidationRules = [
     .trim()
     .isLength({ min: 1, max: 100 })
     .withMessage('College must be between 1 and 100 characters'),
-  body('phone')
-    .matches(/^[0-9]{10}$/)
-    .withMessage('Phone number must be exactly 10 digits'),
   body('email')
     .isEmail()
     .normalizeEmail()
@@ -35,12 +33,13 @@ const userValidationRules = [
     .withMessage('Relationship goal must be Casual, Serious, or Marriage'),
   body('description')
     .trim()
-    .isLength({ min: 50, max: 1000 })
-    .withMessage('Description must be between 50 and 1000 characters'),
+    .isLength({ min: 1, max: 100 })
+    .withMessage('Description must be between 1 and 100 characters'),
   body('preferences')
     .trim()
-    .isLength({ min: 50, max: 1000 })
-    .withMessage('Preferences must be between 50 and 1000 characters'),
+    .isLength({ min: 1, max: 100 })
+    .withMessage('Preferences must be between 1 and 100 characters'),
+
   body('interests')
     .isIn(['Yes', 'No'])
     .withMessage('Interests must be Yes or No'),
@@ -65,7 +64,6 @@ router.post('/create', userValidationRules, async (req, res) => {
       gender,
       interestedIn,
       college,
-      phone,
       email,
       relationshipGoal,
       description,
@@ -74,44 +72,69 @@ router.post('/create', userValidationRules, async (req, res) => {
     } = req.body;
 
     // 3️⃣ Check existing user
-    const existingUser = await User.findOne({
-      $or: [{ email }, { phone }],
-    });
+    const existingUser = await User.findOne({ email });
+
+        // if user exists but not verified, allow to resend OTP and send verification email again
+    if (existingUser && existingUser.verifiedId === false) {
+      const otp = Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit OTP
+      existingUser.otp = otp;
+      existingUser.otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // OTP valid for 10 minutes
+      await existingUser.save();
+
+      const emailSent = await sendVerificationEmail(existingUser.email, otp);
+
+      if (!emailSent) {
+        console.warn("Failed to send verification email for existing user:", existingUser.email);
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: 'User exists but is not verified — resend OTP',
+        data: {
+          userId: existingUser._id,
+          email: existingUser.email,
+          verifiedId: existingUser.verifiedId,
+        },
+      });
+    }
+
 
     // Already paid → block
-    if (existingUser && existingUser.paymentStatus === 'PAID') {
+    if (existingUser && (existingUser.paymentStatus === 'PAID' || existingUser.paymentStatus === 'FREE')) {
       return res.status(409).json({
         success: false,
-        message: 'User with this email or phone number already exists',
+        message: 'User with this email already exists',
       });
     }
 
     // Pending user → allow resume payment
-    if (existingUser && existingUser.paymentStatus === 'PENDING') {
+    if (existingUser && (existingUser.paymentStatus === 'PENDING' )) {
       return res.status(200).json({
         success: true,
         message: 'User exists with pending payment — proceed to payment',
         data: {
           userId: existingUser._id,
           email: existingUser.email,
-          formData: existingUser,
           paymentStatus: existingUser.paymentStatus,
+          verifiedId: existingUser.verifiedId,
         },
       });
     }
 
+
     // 4️⃣ Now apply your FREE offer logic
-    // const paidCount = await User.countDocuments({
-    //   gender: gender,
-    //   paymentStatus: "PAID",
-    // });
+    const filledSlots = await User.countDocuments({
+      gender,
+      paymentStatus: { $in: ["PAID", "FREE"] }
+    });
 
-    // let paymentStatus = "PENDING";
+    let paymentStatus = filledSlots < 5 ? "FREE" : "PENDING";
 
-    // // First 5 get FREE
-    // if (paidCount < 5) {
-    //   paymentStatus = "FREE";
-    // }
+
+    // create OTP for email verification (optional, can be used later for verifying email before payment)
+    const otp = Math.floor(100000 + Math.random() * 900000).toString(); // 6-digit OTP
+    const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // OTP valid for 10 minutes
+
 
     // 5️⃣ Create new user with calculated status
     const user = new User({
@@ -120,16 +143,24 @@ router.post('/create', userValidationRules, async (req, res) => {
       gender,
       interestedIn,
       college,
-      phone,
       email,
       relationshipGoal,
       description,
       preferences,
       interests,
-      // paymentStatus,   // <-- dynamic (FREE or PENDING)
+      paymentStatus,   // <-- dynamic (FREE or PENDING)
+      otp,           // <-- store OTP for later verification
+      otpExpiresAt,   // <-- store OTP expiry time
     });
 
     await user.save();
+
+    // send OTP to user's email
+    const emailSent = await sendVerificationEmail(email, otp);
+
+    if (!emailSent) {
+      console.warn("Failed to send verification email for user:", email);
+    }
 
     res.status(201).json({
       success: true,
@@ -147,60 +178,74 @@ router.post('/create', userValidationRules, async (req, res) => {
     console.error('Error creating user:', error);
     res.status(500).json({
       success: false,
-      message: 'Internal server error',
+      message: 'Something went wrong. Please try again later.',
       error: error.message,
     });
   }
 });
 
-// router.get('/me', async (req, res) => {
-//   try {
-//     const { email } = req.query;
+router.post('/verify-otp', async (req, res) => {
+  const { email, otp } = req.body;
 
-//     if (!email) {
-//       return res.status(400).json({ success: false, message: "Email required" });
-//     }
+  if (!email || !otp) {
+    return res.status(400).json({
+      success: false,
+      message: 'Email and OTP are required',
+    });
+  }
+  const user =  await User.findOne({ email });
+  if (!user) {
+    return res.status(404).json({
+      success: false, 
+      message: 'User not found',
+    });
+  }
+  if (user.otp === otp && user.otpExpiresAt > new Date()) {
+    user.otp = null; // Clear OTP after successful verification
+    user.verifiedId = true; // Mark user as verified
+    await user.save();
+    return res.status(200).json({ success: true, message: 'OTP verified successfully', data: { userId: user._id, email: user.email, paymentStatus: user.paymentStatus } });
+  } else {
+    return res.status(400).json({
+      success: false,
+      message:
+        user.otpExpiresAt < new Date()
+          ? "OTP expired. Please request a new one."
+          : "Invalid OTP",
+    });
+  }
+});
 
-//     const user = await User.findOne({ email });
+router.post('/resend-otp', async (req, res) => {
+  const { email } = req.body;
+  if (!email) { 
+    return res.status(400).json({
+      success: false,
+      message: 'Email is required',
+    });
+  }
+  const user =  await User.findOne({
+    email,
+  });
+  if (!user) {
+    return res.status(404).json({
+      success: false,
+      message: 'User not found',
+    });
+  } else {
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    user.otp = otp;
+    user.otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000); // OTP valid for 10 minutes
+    await user.save();
 
-//     if (!user) {
-//       return res.status(200).json({ success: false, message: "New user" });
-//     }
-
-//     if (user.paymentStatus === "PAID") {
-//       return res.status(409).json({
-//         success: false,
-//         message: "You have already completed payment",
-//       });
-//     }
-
-//     // IMPORTANT PART 👇
-//     return res.status(200).json({
-//       success: true,
-//       data: user,   // send old data back to frontend
-//     });
-
-//   } catch (error) {
-//     res.status(500).json({ success: false, message: "Server error" });
-//   }
-// });
-
-// router.put('/update/:userId', async (req, res) => {
-//   try {
-//     const user = await User.findByIdAndUpdate(
-//       req.params.userId,
-//       req.body,
-//       { new: true }
-//     );
-
-//     res.json({ success: true, data: user });
-
-//   } catch (error) {
-//     res.status(500).json({ success: false, message: "Update failed" });
-//   }
-// });
+    // resend OTP email
+    const emailSent = await sendVerificationEmail(email, otp);
+    if (emailSent) {
+      return res.status(200).json({ success: true, message: 'OTP resent successfully' });
+    }
+    return res.status(500).json({ success: false, message: 'Failed to resend OTP' });
+  }
+});
 
 export default router;
 
-
-// NOTE: if use in situation where user exists but payment pending, handle that case separately

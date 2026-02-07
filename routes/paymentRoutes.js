@@ -20,9 +20,10 @@ router.post('/create-order', [
       });
     }
 
-    const { userId, amount } = req.body;
+    const { userId, amount } = req.body; // <-- USE THIS
 
-    // Find user
+    console.log("Creating payment order for userId:", userId, "Amount (₹):", amount);
+
     const user = await User.findById(userId);
     if (!user) {
       return res.status(404).json({
@@ -31,7 +32,6 @@ router.post('/create-order', [
       });
     }
 
-    // Check if user already paid
     if (user.paymentStatus === 'PAID') {
       return res.status(400).json({
         success: false,
@@ -39,26 +39,29 @@ router.post('/create-order', [
       });
     }
 
-    const paymentGateway = process.env.PAYMENT_GATEWAY ;
-    const fixedAmount = parseFloat(process.env.PAYMENT_AMOUNT);
+    if (amount < 1) {
+      return res.status(400).json({
+        success: false,
+        message: "Minimum payment is ₹1",
+      });
+    }
 
+    const paymentGateway = process.env.PAYMENT_GATEWAY;
     let paymentData;
 
     if (paymentGateway === 'razorpay') {
-      // Create Razorpay order
-      paymentData = await createRazorpayOrder(fixedAmount, userId);
-      
-      // Store Razorpay order ID
+      paymentData = await createRazorpayOrder(amount, userId);
+
       user.razorpayOrderId = paymentData.orderId;
       await user.save();
-    } else if (paymentGateway === 'stripe') {
-      // Create Stripe payment intent
-      paymentData = await createStripePaymentIntent(fixedAmount, userId);
-      
-      // Store Stripe payment intent ID
+    } 
+    else if (paymentGateway === 'stripe') {
+      paymentData = await createStripePaymentIntent(amount, userId);
+
       user.stripePaymentIntentId = paymentData.paymentIntentId;
       await user.save();
-    } else {
+    } 
+    else {
       return res.status(400).json({
         success: false,
         message: 'Invalid payment gateway configuration',
@@ -70,10 +73,11 @@ router.post('/create-order', [
       message: 'Payment order created successfully',
       data: {
         ...paymentData,
-        amount: fixedAmount,
+        amount,          // RUPEES sent back to frontend
         currency: paymentGateway === 'razorpay' ? 'INR' : 'USD',
       },
     });
+
   } catch (error) {
     console.error('Error creating payment order:', error);
     res.status(500).json({
@@ -83,6 +87,7 @@ router.post('/create-order', [
     });
   }
 });
+
 
 // POST /api/payments/verify - Verify payment
 router.post('/verify', [

@@ -1,3 +1,4 @@
+import { verify } from 'crypto';
 import mongoose from 'mongoose';
 
 const userSchema = new mongoose.Schema(
@@ -31,17 +32,13 @@ const userSchema = new mongoose.Schema(
       trim: true,
       maxlength: [100, 'College name cannot exceed 100 characters'],
     },
-    phone: {
-      type: String,
-      required: [true, 'Phone number is required'],
-      trim: true,
-      match: [/^[0-9]{10}$/, 'Phone number must be 10 digits'],
-    },
     email: {
       type: String,
       required: [true, 'Email is required'],
+      unique: true,
       trim: true,
       lowercase: true,
+      index: true,
       match: [/^\S+@\S+\.\S+$/, 'Please provide a valid email'],
     },
     relationshipGoal: {
@@ -52,16 +49,12 @@ const userSchema = new mongoose.Schema(
     description: {
       type: String,
       required: [true, 'Self description is required'],
-      trim: true,
-      minlength: [50, 'Description must be at least 50 characters'],
-      maxlength: [1000, 'Description cannot exceed 1000 characters'],
+      trim: true
     },
     preferences: {
       type: String,
       required: [true, 'Partner preferences are required'],
-      trim: true,
-      minlength: [50, 'Preferences must be at least 50 characters'],
-      maxlength: [1000, 'Preferences cannot exceed 1000 characters'],
+      trim: true
     },
     interests: {
       type: String,
@@ -85,6 +78,18 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+    otp: {
+      type: String,
+      default: null,
+    },
+    otpExpiresAt: {
+      type: Date,
+      default: null,
+    },
+    verifiedId: {
+      type: Boolean,
+      default: false,
+    },
   },
   {
     timestamps: true, // Adds createdAt and updatedAt automatically
@@ -93,8 +98,8 @@ const userSchema = new mongoose.Schema(
 
 // Index for faster queries
 userSchema.index({ email: 1 });
-userSchema.index({ phone: 1 });
 userSchema.index({ paymentStatus: 1 });
+userSchema.index({ verifiedId: 1 });
 
 const User = mongoose.model('User', userSchema);
 
